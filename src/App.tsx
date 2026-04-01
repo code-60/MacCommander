@@ -1,5 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type DragEvent as ReactDragEvent,
+} from 'react'
 import './App.css'
 
 type PanelKey = 'left' | 'right'
@@ -54,25 +60,34 @@ type BatchResult = {
   failures: string[]
 }
 
+type DragPayload = {
+  sourcePanel: PanelKey
+  paths: string[]
+}
+
 type PanelProps = {
   panelKey: PanelKey
   panel: PanelState
   active: boolean
-  searchQuery: string
-  showHidden: boolean
-  sortBy: SortBy
-  sortDirection: SortDirection
+  visibleEntries: FsEntry[]
   onActivate: (key: PanelKey) => void
   onSelect: (key: PanelKey, path: string, options: SelectOptions) => void
   onOpenParent: (key: PanelKey) => void
   onOpenEntry: (key: PanelKey, entry: FsEntry) => void
   onContextMenu: (key: PanelKey, path: string | null, x: number, y: number) => void
+  onDragStart: (key: PanelKey, path: string, event: ReactDragEvent<HTMLDivElement>) => void
+  onDragOver: (key: PanelKey, event: ReactDragEvent<HTMLElement>) => void
+  onDragLeave: (key: PanelKey, event: ReactDragEvent<HTMLElement>) => void
+  onDrop: (key: PanelKey, event: ReactDragEvent<HTMLElement>) => void
+  isDropTarget: boolean
 }
 
 const panelName: Record<PanelKey, string> = {
   left: 'Левая',
   right: 'Правая',
 }
+
+const DND_MIME = 'application/x-maccommander'
 
 const emptyPanel = (path = ''): PanelState => ({
   path,
@@ -176,34 +191,60 @@ function getVisibleEntries(
   })
 }
 
+function parseDragPayload(raw: string): DragPayload | null {
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as DragPayload
+
+    if (
+      !parsed ||
+      (parsed.sourcePanel !== 'left' && parsed.sourcePanel !== 'right') ||
+      !Array.isArray(parsed.paths)
+    ) {
+      return null
+    }
+
+    return {
+      sourcePanel: parsed.sourcePanel,
+      paths: parsed.paths.filter((path) => typeof path === 'string' && path.length > 0),
+    }
+  } catch {
+    return null
+  }
+}
+
 function Panel({
   panelKey,
   panel,
   active,
-  searchQuery,
-  showHidden,
-  sortBy,
-  sortDirection,
+  visibleEntries,
   onActivate,
   onSelect,
   onOpenParent,
   onOpenEntry,
   onContextMenu,
+  onDragStart,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  isDropTarget,
 }: PanelProps) {
-  const visibleEntries = useMemo(
-    () => getVisibleEntries(panel.entries, searchQuery, showHidden, sortBy, sortDirection),
-    [panel.entries, searchQuery, showHidden, sortBy, sortDirection],
-  )
   const visiblePaths = useMemo(() => visibleEntries.map((entry) => entry.path), [visibleEntries])
 
   return (
     <section
-      className={`panel${active ? ' active' : ''}`}
+      className={`panel${active ? ' active' : ''}${isDropTarget ? ' drop-target' : ''}`}
       onMouseDown={() => onActivate(panelKey)}
       onContextMenu={(event) => {
         event.preventDefault()
         onContextMenu(panelKey, null, event.clientX, event.clientY)
       }}
+      onDragOver={(event) => onDragOver(panelKey, event)}
+      onDragLeave={(event) => onDragLeave(panelKey, event)}
+      onDrop={(event) => onDrop(panelKey, event)}
     >
       <div className="panel-info">
         <span className="current-path" title={panel.path}>
@@ -244,6 +285,8 @@ function Panel({
           <div
             key={entry.path}
             className={`file-item${panel.selectedPaths.includes(entry.path) ? ' selected' : ''}${entry.isDir ? ' directory' : ''}`}
+            draggable
+            onDragStart={(event) => onDragStart(panelKey, entry.path, event)}
             onClick={(event) => {
               onSelect(panelKey, entry.path, {
                 toggle: event.metaKey || event.ctrlKey,
@@ -288,6 +331,7 @@ function App() {
   const [isBusy, setIsBusy] = useState(false)
   const [statusMessage, setStatusMessage] = useState('Загрузка...')
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  const [dropTargetPanel, setDropTargetPanel] = useState<PanelKey | null>(null)
 
   const setPanel = useCallback((key: PanelKey, update: (panel: PanelState) => PanelState) => {
     setPanels((prev) => ({ ...prev, [key]: update(prev[key]) }))
@@ -317,12 +361,16 @@ function App() {
           }
 
           const nextSelectedPath =
-            (panel.selectedPath && nextSelectedPaths.includes(panel.selectedPath) && panel.selectedPath) ||
+            (panel.selectedPath &&
+              nextSelectedPaths.includes(panel.selectedPath) &&
+              panel.selectedPath) ||
             nextSelectedPaths[0] ||
             null
 
           const nextAnchorPath =
-            (panel.anchorPath && nextSelectedPaths.includes(panel.anchorPath) && panel.anchorPath) ||
+            (panel.anchorPath &&
+              nextSelectedPaths.includes(panel.anchorPath) &&
+              panel.anchorPath) ||
             nextSelectedPath
 
           return {
@@ -398,7 +446,32 @@ function App() {
     }
   }, [loadPanel])
 
+  const visibleEntriesByPanel = useMemo(
+    () => ({
+      left: getVisibleEntries(
+        panels.left.entries,
+        searchQuery,
+        showHidden,
+        sortBy,
+        sortDirection,
+      ),
+      right: getVisibleEntries(
+        panels.right.entries,
+        searchQuery,
+        showHidden,
+        sortBy,
+        sortDirection,
+      ),
+    }),
+    [panels, searchQuery, showHidden, sortBy, sortDirection],
+  )
+
   const activePanelState = panels[activePanel]
+  const activeVisibleEntries = visibleEntriesByPanel[activePanel]
+  const activeVisiblePaths = useMemo(
+    () => activeVisibleEntries.map((entry) => entry.path),
+    [activeVisibleEntries],
+  )
 
   const activeSelectedEntries = useMemo(() => {
     const index = new Map(activePanelState.entries.map((entry) => [entry.path, entry]))
@@ -424,7 +497,9 @@ function App() {
     }
 
     return (
-      activePanelState.entries.find((entry) => entry.path === activePanelState.selectedPath) ??
+      activePanelState.entries.find(
+        (entry) => entry.path === activePanelState.selectedPath,
+      ) ??
       activeSelectedEntries[0] ??
       null
     )
@@ -459,8 +534,35 @@ function App() {
     }
   }, [closeContextMenu, contextMenu])
 
+  const runSingleOperation = useCallback(
+    async <T,>(title: string, operation: () => Promise<T>): Promise<T | null> => {
+      if (isBusy) {
+        return null
+      }
+
+      setIsBusy(true)
+      setStatusMessage(`${title}...`)
+
+      try {
+        const result = await operation()
+        setStatusMessage(`${title}: выполнено`)
+        return result
+      } catch (error) {
+        setStatusMessage(`${title}: ${getErrorMessage(error)}`)
+        return null
+      } finally {
+        setIsBusy(false)
+      }
+    },
+    [isBusy],
+  )
+
   const runBatchOperation = useCallback(
-    async (title: string, entries: FsEntry[], operation: (entry: FsEntry) => Promise<string | void>) => {
+    async (
+      title: string,
+      entries: FsEntry[],
+      operation: (entry: FsEntry) => Promise<string | void>,
+    ) => {
       if (isBusy) {
         return { successPaths: [], failures: ['Операция уже выполняется'] } satisfies BatchResult
       }
@@ -488,7 +590,9 @@ function App() {
       }
 
       if (failures.length > 0) {
-        setStatusMessage(`${title}: ${entries.length - failures.length}/${entries.length}, ошибок: ${failures.length}`)
+        setStatusMessage(
+          `${title}: ${entries.length - failures.length}/${entries.length}, ошибок: ${failures.length}`,
+        )
       } else {
         setStatusMessage(`${title}: выполнено (${entries.length})`)
       }
@@ -498,145 +602,16 @@ function App() {
     [isBusy],
   )
 
-  const getEntriesForOperation = useCallback((): FsEntry[] => {
-    return activeSelectedEntries.length > 0 ? activeSelectedEntries : activeEntry ? [activeEntry] : []
-  }, [activeEntry, activeSelectedEntries])
-
-  const handleCopy = useCallback(() => {
-    const entries = getEntriesForOperation()
-    if (entries.length === 0) {
-      setStatusMessage('Копирование: ничего не выбрано')
-      return
-    }
-
-    const sourcePanel = activePanel
-    const targetPanel = oppositePanel(sourcePanel)
-    const sourceSelection = entries.map((entry) => entry.path)
-    const targetPath = panels[targetPanel].path
-
-    void (async () => {
-      const result = await runBatchOperation('Копирование', entries, async (entry) => {
-        return invoke<string>('copy_entry', {
-          source: entry.path,
-          destination_dir: targetPath,
-        })
-      })
-
-      await Promise.all([
-        refreshPanel(sourcePanel, sourceSelection),
-        loadPanel(targetPanel, targetPath, result.successPaths.length > 0 ? result.successPaths : null),
-      ])
-    })()
-  }, [activePanel, getEntriesForOperation, loadPanel, panels, refreshPanel, runBatchOperation])
-
-  const handleMove = useCallback(() => {
-    const entries = getEntriesForOperation()
-    if (entries.length === 0) {
-      setStatusMessage('Перемещение: ничего не выбрано')
-      return
-    }
-
-    const sourcePanel = activePanel
-    const targetPanel = oppositePanel(sourcePanel)
-    const sourcePath = panels[sourcePanel].path
-    const targetPath = panels[targetPanel].path
-
-    void (async () => {
-      const result = await runBatchOperation('Перемещение', entries, async (entry) => {
-        return invoke<string>('move_entry', {
-          source: entry.path,
-          destination_dir: targetPath,
-        })
-      })
-
-      await Promise.all([
-        loadPanel(sourcePanel, sourcePath),
-        loadPanel(targetPanel, targetPath, result.successPaths.length > 0 ? result.successPaths : null),
-      ])
-    })()
-  }, [activePanel, getEntriesForOperation, loadPanel, panels, runBatchOperation])
-
-  const handleDelete = useCallback(() => {
-    const entries = getEntriesForOperation()
-    if (entries.length === 0) {
-      setStatusMessage('Удаление: ничего не выбрано')
-      return
-    }
-
-    const confirmMessage =
-      entries.length === 1
-        ? `Удалить ${entries[0].isDir ? 'папку' : 'файл'} "${entries[0].name}"?`
-        : `Удалить выбранные объекты (${entries.length})?`
-
-    if (!window.confirm(confirmMessage)) {
-      return
-    }
-
-    void (async () => {
-      await runBatchOperation('Удаление', entries, async (entry) => {
-        await invoke('delete_entry', { path: entry.path })
-      })
-
-      await refreshPanel(activePanel)
-    })()
-  }, [activePanel, getEntriesForOperation, refreshPanel, runBatchOperation])
-
-  const handleCreateFolder = useCallback(() => {
-    const folderName = window.prompt('Имя новой папки:')
-    if (folderName === null) {
-      return
-    }
-
-    void (async () => {
-      const result = await runBatchOperation('Создание папки', [{ name: folderName, path: '', isDir: true, size: 0, modifiedUnix: null, hidden: false }], async () => {
-        return invoke<string>('create_folder', {
-          parent_dir: panels[activePanel].path,
-          folder_name: folderName,
-        })
-      })
-
-      await refreshPanel(activePanel, result.successPaths[0] ?? null)
-    })()
-  }, [activePanel, panels, refreshPanel, runBatchOperation])
-
-  const handleOpenParent = useCallback(
-    (key: PanelKey) => {
-      const parent = panels[key].parent
-      if (!parent) {
-        return
-      }
-
-      setActivePanel(key)
-      void loadPanel(key, parent)
-    },
-    [loadPanel, panels],
-  )
-
-  const handleOpenEntry = useCallback(
-    (key: PanelKey, entry: FsEntry) => {
-      setActivePanel(key)
-      setPanel(key, (panel) => ({
-        ...panel,
-        selectedPath: entry.path,
-        selectedPaths: [entry.path],
-        anchorPath: entry.path,
-      }))
-
-      if (entry.isDir) {
-        void loadPanel(key, entry.path)
-      } else {
-        setStatusMessage(`Файл выбран: ${entry.name}`)
-      }
-    },
-    [loadPanel, setPanel],
-  )
-
   const handleSelect = useCallback(
     (key: PanelKey, path: string, options: SelectOptions) => {
       setActivePanel(key)
 
       setPanel(key, (panel) => {
-        const current = uniquePaths(panel.selectedPaths.filter((item) => panel.entries.some((entry) => entry.path === item)))
+        const current = uniquePaths(
+          panel.selectedPaths.filter((item) =>
+            panel.entries.some((entry) => entry.path === item),
+          ),
+        )
         let selectedPaths = current
         let anchorPath = panel.anchorPath ?? panel.selectedPath ?? path
 
@@ -679,6 +654,229 @@ function App() {
     [setPanel],
   )
 
+  const getEntriesForOperation = useCallback((): FsEntry[] => {
+    return activeSelectedEntries.length > 0
+      ? activeSelectedEntries
+      : activeEntry
+        ? [activeEntry]
+        : []
+  }, [activeEntry, activeSelectedEntries])
+
+  const handleCopy = useCallback(() => {
+    const entries = getEntriesForOperation()
+    if (entries.length === 0) {
+      setStatusMessage('Копирование: ничего не выбрано')
+      return
+    }
+
+    const sourcePanel = activePanel
+    const targetPanel = oppositePanel(sourcePanel)
+    const sourceSelection = entries.map((entry) => entry.path)
+    const targetPath = panels[targetPanel].path
+
+    void (async () => {
+      const result = await runBatchOperation('Копирование', entries, async (entry) => {
+        return invoke<string>('copy_entry', {
+          source: entry.path,
+          destination_dir: targetPath,
+        })
+      })
+
+      await Promise.all([
+        refreshPanel(sourcePanel, sourceSelection),
+        loadPanel(
+          targetPanel,
+          targetPath,
+          result.successPaths.length > 0 ? result.successPaths : null,
+        ),
+      ])
+    })()
+  }, [
+    activePanel,
+    getEntriesForOperation,
+    loadPanel,
+    panels,
+    refreshPanel,
+    runBatchOperation,
+  ])
+
+  const handleMove = useCallback(() => {
+    const entries = getEntriesForOperation()
+    if (entries.length === 0) {
+      setStatusMessage('Перемещение: ничего не выбрано')
+      return
+    }
+
+    const sourcePanel = activePanel
+    const targetPanel = oppositePanel(sourcePanel)
+    const sourcePath = panels[sourcePanel].path
+    const targetPath = panels[targetPanel].path
+
+    void (async () => {
+      const result = await runBatchOperation('Перемещение', entries, async (entry) => {
+        return invoke<string>('move_entry', {
+          source: entry.path,
+          destination_dir: targetPath,
+        })
+      })
+
+      await Promise.all([
+        loadPanel(sourcePanel, sourcePath),
+        loadPanel(
+          targetPanel,
+          targetPath,
+          result.successPaths.length > 0 ? result.successPaths : null,
+        ),
+      ])
+    })()
+  }, [activePanel, getEntriesForOperation, loadPanel, panels, runBatchOperation])
+
+  const handleDelete = useCallback(() => {
+    const entries = getEntriesForOperation()
+    if (entries.length === 0) {
+      setStatusMessage('Удаление: ничего не выбрано')
+      return
+    }
+
+    const confirmMessage =
+      entries.length === 1
+        ? `Удалить ${entries[0].isDir ? 'папку' : 'файл'} "${entries[0].name}"?`
+        : `Удалить выбранные объекты (${entries.length})?`
+
+    if (!window.confirm(confirmMessage)) {
+      return
+    }
+
+    void (async () => {
+      await runBatchOperation('Удаление', entries, async (entry) => {
+        await invoke('delete_entry', { path: entry.path })
+      })
+
+      await refreshPanel(activePanel)
+    })()
+  }, [activePanel, getEntriesForOperation, refreshPanel, runBatchOperation])
+
+  const handleCreateFolder = useCallback(() => {
+    const folderName = window.prompt('Имя новой папки:')
+    if (folderName === null) {
+      return
+    }
+
+    void (async () => {
+      const createdPath = await runSingleOperation('Создание папки', async () => {
+        return invoke<string>('create_folder', {
+          parent_dir: panels[activePanel].path,
+          folder_name: folderName,
+        })
+      })
+
+      if (createdPath) {
+        await refreshPanel(activePanel, createdPath)
+      }
+    })()
+  }, [activePanel, panels, refreshPanel, runSingleOperation])
+
+  const handleRename = useCallback(() => {
+    const entries = getEntriesForOperation()
+    if (entries.length === 0) {
+      setStatusMessage('Переименование: ничего не выбрано')
+      return
+    }
+
+    if (entries.length > 1) {
+      setStatusMessage('Переименование: выбери только один объект')
+      return
+    }
+
+    const entry = entries[0]
+    const newName = window.prompt('Новое имя:', entry.name)
+
+    if (newName === null) {
+      return
+    }
+
+    void (async () => {
+      const renamedPath = await runSingleOperation('Переименование', async () => {
+        return invoke<string>('rename_entry', {
+          path: entry.path,
+          new_name: newName,
+        })
+      })
+
+      if (renamedPath) {
+        await refreshPanel(activePanel, renamedPath)
+      }
+    })()
+  }, [activePanel, getEntriesForOperation, refreshPanel, runSingleOperation])
+
+  const handleDuplicate = useCallback(() => {
+    const entries = getEntriesForOperation()
+    if (entries.length === 0) {
+      setStatusMessage('Дублирование: ничего не выбрано')
+      return
+    }
+
+    void (async () => {
+      const result = await runBatchOperation('Дублирование', entries, async (entry) => {
+        return invoke<string>('duplicate_entry', { path: entry.path })
+      })
+
+      await refreshPanel(
+        activePanel,
+        result.successPaths.length > 0 ? result.successPaths : null,
+      )
+    })()
+  }, [activePanel, getEntriesForOperation, refreshPanel, runBatchOperation])
+
+  const handleQuickLook = useCallback(() => {
+    const entry = activeEntry
+    if (!entry) {
+      setStatusMessage('Quick Look: ничего не выбрано')
+      return
+    }
+
+    void (async () => {
+      setStatusMessage(`Quick Look: ${entry.name}`)
+      try {
+        await invoke('quick_look', { path: entry.path })
+      } catch (error) {
+        setStatusMessage(`Quick Look: ${getErrorMessage(error)}`)
+      }
+    })()
+  }, [activeEntry])
+
+  const handleOpenParent = useCallback(
+    (key: PanelKey) => {
+      const parent = panels[key].parent
+      if (!parent) {
+        return
+      }
+
+      setActivePanel(key)
+      void loadPanel(key, parent)
+    },
+    [loadPanel, panels],
+  )
+
+  const handleOpenEntry = useCallback(
+    (key: PanelKey, entry: FsEntry) => {
+      setActivePanel(key)
+      setPanel(key, (panel) => ({
+        ...panel,
+        selectedPath: entry.path,
+        selectedPaths: [entry.path],
+        anchorPath: entry.path,
+      }))
+
+      if (entry.isDir) {
+        void loadPanel(key, entry.path)
+      } else {
+        setStatusMessage(`Файл выбран: ${entry.name}`)
+      }
+    },
+    [loadPanel, setPanel],
+  )
+
   const handleContextMenu = useCallback(
     (key: PanelKey, path: string | null, x: number, y: number) => {
       setActivePanel(key)
@@ -703,6 +901,116 @@ function App() {
     [setPanel],
   )
 
+  const handleDragStart = useCallback(
+    (key: PanelKey, path: string, event: ReactDragEvent<HTMLDivElement>) => {
+      const panel = panels[key]
+      const selectedPaths = panel.selectedPaths.includes(path) ? panel.selectedPaths : [path]
+      const payload: DragPayload = {
+        sourcePanel: key,
+        paths: uniquePaths(selectedPaths),
+      }
+
+      event.dataTransfer.setData(DND_MIME, JSON.stringify(payload))
+      event.dataTransfer.effectAllowed = 'copyMove'
+    },
+    [panels],
+  )
+
+  const handleDragOver = useCallback(
+    (key: PanelKey, event: ReactDragEvent<HTMLElement>) => {
+      const hasInternalPayload = Array.from(event.dataTransfer.types).includes(DND_MIME)
+      if (!hasInternalPayload) {
+        return
+      }
+
+      event.preventDefault()
+      event.dataTransfer.dropEffect = event.altKey ? 'move' : 'copy'
+      if (dropTargetPanel !== key) {
+        setDropTargetPanel(key)
+      }
+    },
+    [dropTargetPanel],
+  )
+
+  const handleDragLeave = useCallback(
+    (key: PanelKey, event: ReactDragEvent<HTMLElement>) => {
+      const related = event.relatedTarget as Node | null
+      if (related && event.currentTarget.contains(related)) {
+        return
+      }
+
+      if (dropTargetPanel === key) {
+        setDropTargetPanel(null)
+      }
+    },
+    [dropTargetPanel],
+  )
+
+  const handleDrop = useCallback(
+    (targetPanel: PanelKey, event: ReactDragEvent<HTMLElement>) => {
+      event.preventDefault()
+      setDropTargetPanel(null)
+
+      const payload = parseDragPayload(event.dataTransfer.getData(DND_MIME))
+      if (!payload || payload.paths.length === 0) {
+        return
+      }
+
+      if (payload.sourcePanel === targetPanel) {
+        setStatusMessage('Перетаскивание в ту же панель не выполняется')
+        return
+      }
+
+      const sourcePanel = payload.sourcePanel
+      const sourceEntriesIndex = new Map(
+        panels[sourcePanel].entries.map((entry) => [entry.path, entry]),
+      )
+      const entries = payload.paths
+        .map((path) => sourceEntriesIndex.get(path))
+        .filter((entry): entry is FsEntry => Boolean(entry))
+
+      if (entries.length === 0) {
+        setStatusMessage('Drag & Drop: объекты не найдены')
+        return
+      }
+
+      const shouldMove = event.altKey
+      const actionTitle = shouldMove
+        ? 'Перемещение (drag&drop)'
+        : 'Копирование (drag&drop)'
+      const targetPath = panels[targetPanel].path
+      const sourceSelection = entries.map((entry) => entry.path)
+
+      void (async () => {
+        const result = await runBatchOperation(actionTitle, entries, async (entry) => {
+          if (shouldMove) {
+            return invoke<string>('move_entry', {
+              source: entry.path,
+              destination_dir: targetPath,
+            })
+          }
+
+          return invoke<string>('copy_entry', {
+            source: entry.path,
+            destination_dir: targetPath,
+          })
+        })
+
+        await Promise.all([
+          shouldMove
+            ? loadPanel(sourcePanel, panels[sourcePanel].path)
+            : refreshPanel(sourcePanel, sourceSelection),
+          loadPanel(
+            targetPanel,
+            targetPath,
+            result.successPaths.length > 0 ? result.successPaths : null,
+          ),
+        ])
+      })()
+    },
+    [loadPanel, panels, refreshPanel, runBatchOperation],
+  )
+
   const handleOpenSelected = useCallback(() => {
     if (!activeEntry) {
       return
@@ -714,6 +1022,44 @@ function App() {
       setStatusMessage(`Файл выбран: ${activeEntry.name}`)
     }
   }, [activeEntry, activePanel, loadPanel])
+
+  const navigateSelection = useCallback(
+    (delta: number, extendRange: boolean) => {
+      if (activeVisiblePaths.length === 0) {
+        return
+      }
+
+      const currentPath = panels[activePanel].selectedPath
+      let index = currentPath ? activeVisiblePaths.indexOf(currentPath) : -1
+
+      if (index === -1) {
+        index = delta > 0 ? -1 : activeVisiblePaths.length
+      }
+
+      const nextIndex = Math.max(0, Math.min(activeVisiblePaths.length - 1, index + delta))
+      const nextPath = activeVisiblePaths[nextIndex]
+
+      handleSelect(activePanel, nextPath, {
+        toggle: false,
+        range: extendRange,
+        visiblePaths: activeVisiblePaths,
+      })
+    },
+    [activePanel, activeVisiblePaths, handleSelect, panels],
+  )
+
+  const toggleCurrentSelection = useCallback(() => {
+    const currentPath = panels[activePanel].selectedPath ?? activeVisiblePaths[0]
+    if (!currentPath) {
+      return
+    }
+
+    handleSelect(activePanel, currentPath, {
+      toggle: true,
+      range: false,
+      visiblePaths: activeVisiblePaths,
+    })
+  }, [activePanel, activeVisiblePaths, handleSelect, panels])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -728,9 +1074,26 @@ function App() {
         return
       }
 
+      if (event.key === 'Escape') {
+        closeContextMenu()
+        return
+      }
+
       if (event.key === 'Tab') {
         event.preventDefault()
         setActivePanel((current) => oppositePanel(current))
+        return
+      }
+
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        navigateSelection(-1, event.shiftKey)
+        return
+      }
+
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        navigateSelection(1, event.shiftKey)
         return
       }
 
@@ -743,6 +1106,30 @@ function App() {
       if (event.key === 'Backspace') {
         event.preventDefault()
         handleOpenParent(activePanel)
+        return
+      }
+
+      if (event.key === ' ' && !event.shiftKey) {
+        event.preventDefault()
+        toggleCurrentSelection()
+        return
+      }
+
+      if (event.key === ' ' && event.shiftKey) {
+        event.preventDefault()
+        handleQuickLook()
+        return
+      }
+
+      if ((event.key === 'y' || event.key === 'Y') && event.metaKey) {
+        event.preventDefault()
+        handleQuickLook()
+        return
+      }
+
+      if ((event.key === 'd' || event.key === 'D') && event.metaKey) {
+        event.preventDefault()
+        handleDuplicate()
         return
       }
 
@@ -762,6 +1149,9 @@ function App() {
       } else if (event.key === 'F6') {
         event.preventDefault()
         handleMove()
+      } else if (event.key === 'F2') {
+        event.preventDefault()
+        handleRename()
       } else if (event.key === 'F7') {
         event.preventDefault()
         handleCreateFolder()
@@ -777,16 +1167,25 @@ function App() {
     }
   }, [
     activePanel,
+    closeContextMenu,
     handleCopy,
     handleCreateFolder,
     handleDelete,
+    handleDuplicate,
     handleMove,
     handleOpenParent,
     handleOpenSelected,
+    handleQuickLook,
+    handleRename,
     isBusy,
+    navigateSelection,
+    toggleCurrentSelection,
   ])
 
-  const selectedFilesSize = activeSelectedEntries.reduce((sum, entry) => sum + (entry.isDir ? 0 : entry.size), 0)
+  const selectedFilesSize = activeSelectedEntries.reduce(
+    (sum, entry) => sum + (entry.isDir ? 0 : entry.size),
+    0,
+  )
   const selectedSummary =
     activeSelectedEntries.length === 0
       ? 'Ничего не выбрано'
@@ -834,10 +1233,38 @@ function App() {
           >
             Переместить
           </button>
-          <button type="button" className="tool-btn primary" onClick={handleCreateFolder} disabled={isBusy}>
+          <button
+            type="button"
+            className="tool-btn"
+            onClick={handleDuplicate}
+            disabled={isBusy || activeSelectedEntries.length === 0}
+          >
+            Дублировать
+          </button>
+          <button
+            type="button"
+            className="tool-btn"
+            onClick={handleRename}
+            disabled={isBusy || activeSelectedEntries.length !== 1}
+          >
+            Переименовать
+          </button>
+          <button
+            type="button"
+            className="tool-btn primary"
+            onClick={handleCreateFolder}
+            disabled={isBusy}
+          >
             Новая папка
           </button>
-
+          <button
+            type="button"
+            className="tool-btn"
+            onClick={handleQuickLook}
+            disabled={!activeEntry}
+          >
+            Quick Look
+          </button>
           <button
             type="button"
             className="tool-btn"
@@ -885,30 +1312,34 @@ function App() {
           panelKey="left"
           panel={panels.left}
           active={activePanel === 'left'}
-          searchQuery={searchQuery}
-          showHidden={showHidden}
-          sortBy={sortBy}
-          sortDirection={sortDirection}
+          visibleEntries={visibleEntriesByPanel.left}
           onActivate={setActivePanel}
           onSelect={handleSelect}
           onOpenParent={handleOpenParent}
           onOpenEntry={handleOpenEntry}
           onContextMenu={handleContextMenu}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          isDropTarget={dropTargetPanel === 'left'}
         />
 
         <Panel
           panelKey="right"
           panel={panels.right}
           active={activePanel === 'right'}
-          searchQuery={searchQuery}
-          showHidden={showHidden}
-          sortBy={sortBy}
-          sortDirection={sortDirection}
+          visibleEntries={visibleEntriesByPanel.right}
           onActivate={setActivePanel}
           onSelect={handleSelect}
           onOpenParent={handleOpenParent}
           onOpenEntry={handleOpenEntry}
           onContextMenu={handleContextMenu}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          isDropTarget={dropTargetPanel === 'right'}
         />
       </main>
 
@@ -947,6 +1378,39 @@ function App() {
             }}
           >
             Переместить (F6)
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            disabled={isBusy || activeSelectedEntries.length === 0}
+            onClick={() => {
+              closeContextMenu()
+              handleDuplicate()
+            }}
+          >
+            Дублировать (Cmd+D)
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            disabled={isBusy || activeSelectedEntries.length !== 1}
+            onClick={() => {
+              closeContextMenu()
+              handleRename()
+            }}
+          >
+            Переименовать (F2)
+          </button>
+          <button
+            type="button"
+            className="context-menu-item"
+            disabled={!activeEntry}
+            onClick={() => {
+              closeContextMenu()
+              handleQuickLook()
+            }}
+          >
+            Quick Look (Shift+Space)
           </button>
           <button
             type="button"

@@ -5,6 +5,7 @@ use std::{
   fs,
   io,
   path::{Path, PathBuf},
+  process::{Command, Stdio},
   time::UNIX_EPOCH,
 };
 
@@ -70,6 +71,66 @@ fn file_name(path: &Path) -> Result<String, String> {
     .file_name()
     .map(|name| name.to_string_lossy().into_owned())
     .ok_or_else(|| format!("Не удалось получить имя объекта: {}", path_to_string(path)))
+}
+
+fn validate_entry_name(name: &str) -> Result<String, String> {
+  let trimmed = name.trim();
+
+  if trimmed.is_empty() {
+    return Err(String::from("Имя не может быть пустым"));
+  }
+
+  if trimmed == "." || trimmed == ".." || trimmed.contains('/') {
+    return Err(String::from("Некорректное имя"));
+  }
+
+  Ok(trimmed.to_string())
+}
+
+fn split_name_ext(file_name: &str) -> (&str, &str) {
+  if let Some(idx) = file_name.rfind('.') {
+    if idx > 0 {
+      return (&file_name[..idx], &file_name[idx..]);
+    }
+  }
+
+  (file_name, "")
+}
+
+fn generate_duplicate_name(source_name: &str, is_dir: bool, index: usize) -> String {
+  if is_dir {
+    if index == 1 {
+      format!("{source_name} copy")
+    } else {
+      format!("{source_name} copy {index}")
+    }
+  } else {
+    let (base, ext) = split_name_ext(source_name);
+
+    if index == 1 {
+      format!("{base} copy{ext}")
+    } else {
+      format!("{base} copy {index}{ext}")
+    }
+  }
+}
+
+fn generate_duplicate_target_path(source_path: &Path, is_dir: bool) -> Result<PathBuf, String> {
+  let parent = source_path
+    .parent()
+    .ok_or_else(|| format!("Не удалось определить родительскую папку: {}", path_to_string(source_path)))?;
+  let source_name = file_name(source_path)?;
+
+  for idx in 1..10_000 {
+    let candidate_name = generate_duplicate_name(&source_name, is_dir, idx);
+    let candidate_path = parent.join(candidate_name);
+
+    if !candidate_path.exists() {
+      return Ok(candidate_path);
+    }
+  }
+
+  Err(String::from("Не удалось подобрать имя для копии"))
 }
 
 fn io_ctx(action: &str, path: &Path, error: &io::Error) -> String {
@@ -251,15 +312,7 @@ fn create_folder(parent_dir: String, folder_name: String) -> Result<String, Stri
   let parent = normalize_path(Path::new(&parent_dir));
   ensure_dir(&parent)?;
 
-  let folder_name = folder_name.trim();
-
-  if folder_name.is_empty() {
-    return Err(String::from("Имя папки не может быть пустым"));
-  }
-
-  if folder_name == "." || folder_name == ".." || folder_name.contains('/') {
-    return Err(String::from("Некорректное имя папки"));
-  }
+  let folder_name = validate_entry_name(&folder_name)?;
 
   let target = parent.join(folder_name);
 
@@ -270,6 +323,83 @@ fn create_folder(parent_dir: String, folder_name: String) -> Result<String, Stri
   fs::create_dir(&target).map_err(|err| io_ctx("Не удалось создать папку", &target, &err))?;
 
   Ok(path_to_string(&target))
+}
+
+#[tauri::command]
+fn rename_entry(path: String, new_name: String) -> Result<String, String> {
+  let source = normalize_path(Path::new(&path));
+
+  if !source.exists() {
+    return Err(format!("Объект не найден: {}", path_to_string(&source)));
+  }
+
+  let validated_name = validate_entry_name(&new_name)?;
+  let parent = source
+    .parent()
+    .ok_or_else(|| format!("Не удалось определить родительскую папку: {}", path_to_string(&source)))?;
+  let destination = parent.join(validated_name);
+
+  if destination == source {
+    return Ok(path_to_string(&source));
+  }
+
+  if destination.exists() {
+    return Err(format!("Объект уже существует: {}", path_to_string(&destination)));
+  }
+
+  fs::rename(&source, &destination)
+    .map_err(|err| io_ctx("Не удалось переименовать объект", &source, &err))?;
+
+  Ok(path_to_string(&destination))
+}
+
+#[tauri::command]
+fn duplicate_entry(path: String) -> Result<String, String> {
+  let source = normalize_path(Path::new(&path));
+
+  if !source.exists() {
+    return Err(format!("Объект не найден: {}", path_to_string(&source)));
+  }
+
+  let metadata =
+    fs::symlink_metadata(&source).map_err(|err| io_ctx("Ошибка чтения метаданных", &source, &err))?;
+  let destination = generate_duplicate_target_path(&source, metadata.is_dir())?;
+
+  if metadata.is_dir() {
+    copy_directory_recursive(&source, &destination)?;
+  } else {
+    fs::copy(&source, &destination)
+      .map_err(|err| io_ctx("Не удалось скопировать файл", &source, &err))?;
+  }
+
+  Ok(path_to_string(&destination))
+}
+
+#[tauri::command]
+fn quick_look(path: String) -> Result<(), String> {
+  let target = normalize_path(Path::new(&path));
+
+  if !target.exists() {
+    return Err(format!("Объект не найден: {}", path_to_string(&target)));
+  }
+
+  #[cfg(target_os = "macos")]
+  {
+    Command::new("qlmanage")
+      .arg("-p")
+      .arg(&target)
+      .stdout(Stdio::null())
+      .stderr(Stdio::null())
+      .spawn()
+      .map_err(|err| io_ctx("Не удалось открыть Quick Look", &target, &err))?;
+
+    Ok(())
+  }
+
+  #[cfg(not(target_os = "macos"))]
+  {
+    Err(String::from("Quick Look доступен только на macOS"))
+  }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -291,7 +421,10 @@ pub fn run() {
       copy_entry,
       move_entry,
       delete_entry,
-      create_folder
+      create_folder,
+      rename_entry,
+      duplicate_entry,
+      quick_look
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");

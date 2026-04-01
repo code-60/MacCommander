@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Commander Pro — Minimal</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+        :root {
+            --bg: #f5f5f7;
+            --surface: #ffffff;
+            --text-main: #1d1d1f;
+            --text-secondary: #86868b;
+            --accent: #0071e3;
+            --border: #d2d2d7;
+            --hover: #fbfbfd;
+            --selected: #e8f2ff;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Главное окно */
+        .window {
+            width: 1100px;
+            height: 750px;
+            background: var(--surface);
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        /* Шапка с кнопками управления */
+        .title-bar {
+            height: 52px;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+            background: #fbfbfd;
+        }
+
+        .window-controls {
+            display: flex;
+            gap: 8px;
+        }
+
+        .dot { width: 12px; height: 12px; border-radius: 50%; background: #e5e5e5; }
+        .dot.red { background: #ff5f56; }
+
+        .toolbar {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .tool-btn {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 6px 12px;
+            border-radius: 6px;
+            transition: 0.2s;
+        }
+
+        .tool-btn:hover {
+            background: #f2f2f7;
+            color: var(--text-main);
+        }
+
+        /* Рабочая область */
+        .workspace {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            flex-grow: 1;
+            background: var(--border); /* Цвет разделителя */
+            gap: 1px;
+        }
+
+        .panel {
+            background: var(--surface);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-info {
+            padding: 12px 20px;
+            background: #fbfbfd;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .current-path {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .disk-space {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        /* Список файлов */
+        .file-list {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        .list-header {
+            display: grid;
+            grid-template-columns: 1fr 80px 100px;
+            padding: 8px 20px;
+            border-bottom: 1px solid var(--border);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .file-item {
+            display: grid;
+            grid-template-columns: 1fr 80px 100px;
+            padding: 10px 20px;
+            font-size: 13px;
+            align-items: center;
+            border-bottom: 1px solid #f5f5f7;
+            cursor: default;
+        }
+
+        .file-item:hover { background-color: var(--hover); }
+        .file-item.selected { background-color: var(--selected); }
+
+        .name-box { display: flex; align-items: center; gap: 10px; }
+        .icon { font-size: 16px; width: 20px; text-align: center; }
+        
+        .size, .date {
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        /* Нижняя панель */
+        .status-bar {
+            height: 40px;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            background: #fbfbfd;
+        }
+
+        .search-input {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            outline: none;
+            width: 200px;
+        }
+
+        /* Скроллбар */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-thumb { background: #d2d2d7; border-radius: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="window">
+    <div class="title-bar">
+        <div class="window-controls">
+            <div class="dot red"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+        </div>
+        <div class="toolbar">
+            <div class="tool-btn">Просмотр</div>
+            <div class="tool-btn">Правка</div>
+            <div class="tool-btn">Копировать</div>
+            <div class="tool-btn">Переместить</div>
+            <div class="tool-btn" style="color: var(--accent);">Новая папка</div>
+        </div>
+        <input type="text" class="search-input" placeholder="Поиск файлов...">
+    </div>
+
+    <main class="workspace">
+        <section class="panel">
+            <div class="panel-info">
+                <span class="current-path">/Users/admin/Projects/code60</span>
+                <span class="disk-space">42.5 ГБ свободно</span>
+            </div>
+            <div class="file-list">
+                <div class="list-header">
+                    <span>Имя</span>
+                    <span>Размер</span>
+                    <span>Дата</span>
+                </div>
+                <div class="file-item">
+                    <div class="name-box"><span class="icon">📁</span> ..</div>
+                    <span class="size">—</span>
+                    <span class="date">—</span>
+                </div>
+                <div class="file-item">
+                    <div class="name-box"><span class="icon">📁</span> components</div>
+                    <span class="size">440 КБ</span>
+                    <span class="date">Сегодня</span>
+                </div>
+                <div class="file-item selected">
+                    <div class="name-box"><span class="icon">📄</span> index.tsx</div>
+                    <span class="size">12 КБ</span>
+                    <span class="date">Вчера</span>
+                </div>
+                <div class="file-item">
+                    <div class="name-box"><span class="icon">📄</span> styles.css</div>
+                    <span class="size">4 КБ</span>
+                    <span class="date">28 Марта</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-info">
+                <span class="current-path">/Volumes/Backup/Data</span>
+                <span class="disk-space">1.2 ТБ свободно</span>
+            </div>
+            <div class="file-list">
+                <div class="list-header">
+                    <span>Имя</span>
+                    <span>Размер</span>
+                    <span>Дата</span>
+                </div>
+                <div class="file-item">
+                    <div class="name-box"><span class="icon">📁</span> ..</div>
+                    <span class="size">—</span>
+                    <span class="date">—</span>
+                </div>
+                <div class="file-item">
+                    <div class="name-box"><span class="icon">📦</span> archive.zip</div>
+                    <span class="size">1.4 ГБ</span>
+                    <span class="date">15 Января</span>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="status-bar">
+        <div>Выбрано объектов: 1 (12 КБ)</div>
+        <div style="display: flex; gap: 15px;">
+            <span>CPU: 2%</span>
+            <span>RAM: 140MB</span>
+        </div>
+    </footer>
+</div>
+
+</body>
+</html>
